@@ -144,7 +144,7 @@ data OpDesc = OpDesc Op ColName ColName
   deriving stock (Show, Eq, Ord)
 
 (+:) :: ColName -> ColName -> OpDesc
-(+:) = OpDesc Product
+(+:) = OpDesc Sum
 
 infix 5 +:
 
