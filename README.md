@@ -6,7 +6,7 @@ ghci> frame & describe
 "floaty" -> Float
 "inty" -> Int
 ghci> frame & "foo" .= "inty" +: "floaty"
-ghci> describe frame
+ghci> frame & describe
 "doubly" -> Double
 "floaty" -> Float
 "foo" -> Float
