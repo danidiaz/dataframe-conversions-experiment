@@ -4,14 +4,15 @@
 {-# LANGUAGE MultiWayIf #-}
 module Frame (someFunc) where
 
-import Type.Reflection (TypeRep, SomeTypeRep(..), eqTypeRep)
+import Type.Reflection (TypeRep, SomeTypeRep(..),  Typeable, eqTypeRep, typeRep)
 import Type.Reflection qualified
 import Data.Map (Map)
 import Data.Map qualified
 import Data.Text (Text)
-import Control.Concurrent.MVar (MVar, modifyMVar_)
+import Control.Concurrent.MVar (MVar, modifyMVar_, readMVar, newMVar)
 import Control.Exception (Exception, throwIO)
 import Data.Function ((&))
+import Data.Foldable qualified
 
 data Frame = Frame {
         opDict :: OpDict,
@@ -20,13 +21,30 @@ data Frame = Frame {
         colMapRef :: MVar (Map ColName SomeCol)
     }
 
-
+createExampleFrame :: IO Frame
+createExampleFrame = do
+    let opDict =
+            mconcat [
+                  singletonOpDict @Int Sum (+)
+                , singletonOpDict @Int Diff (-)
+                , singletonOpDict @Int Product (*)
+                , singletonOpDict @Float Sum (+)
+                , singletonOpDict @Float Diff  (-)
+                , singletonOpDict @Float Product (*)
+                , singletonOpDict @Double Sum (+)
+                , singletonOpDict @Double Diff (-)
+                , singletonOpDict @Double Product (*)
+            ]
+    let convDict = undefined
+    let colMap = undefined
+    colMapRef <- newMVar colMap
+    pure Frame {opDict, convDict, colMapRef} 
 
 newtype ColName = ColName Text  
     deriving newtype (Show, Eq, Ord)
 
 data SomeCol where
-    SomeCol :: TypeRep a -> Col a -> SomeCol
+    SomeCol :: Show a => TypeRep a -> Col a -> SomeCol
 
 newtype Col a = Col [a]
     deriving newtype (Functor, Foldable)
@@ -38,9 +56,14 @@ data Op =
     deriving stock (Show, Eq, Ord)
 
 data SomeOp where
-    SomeOp :: TypeRep a -> (a -> a -> a) -> SomeOp
+    SomeOp :: Show a => TypeRep a -> (a -> a -> a) -> SomeOp
 
-data OpDict = OpDict (Map (SomeTypeRep, Op) SomeOp)
+newtype OpDict = OpDict (Map (SomeTypeRep, Op) SomeOp)
+    deriving newtype (Semigroup,Monoid)
+
+singletonOpDict :: forall a . (Show a, Typeable a) => Op -> (a -> a -> a) -> OpDict
+singletonOpDict op f = 
+    OpDict $ Data.Map.singleton (SomeTypeRep (typeRep @a), op) (SomeOp (typeRep @a) f)
 
 performOp :: forall t. TypeRep t -> Col t -> Col t -> Op -> OpDict -> Maybe (Col t)
 performOp tr (Col ls) (Col rs) op (OpDict dict) = 
@@ -53,6 +76,10 @@ data SomeConv where
     SomeConv:: TypeRep a -> TypeRep b -> (a -> b) -> SomeConv
 
 data ConvDict = ConvDict (Map (SomeTypeRep,SomeTypeRep) SomeConv)
+
+singletonConvDict :: forall a b . (Typeable a, Typeable b) => (a -> b) -> ConvDict
+singletonConvDict f = 
+    ConvDict $ Data.Map.singleton (SomeTypeRep (typeRep @a), SomeTypeRep (typeRep @b)) (SomeConv (typeRep @a) (typeRep @b) f)
 
 performConv :: TypeRep l -> Col l -> TypeRep r -> Col r -> ConvDict -> Maybe (Either (Col l, Col l) (Col r, Col r))
 performConv trL colL trR colR (ConvDict dict) = 
@@ -84,14 +111,18 @@ infix 5 -:
 (*:) = OpDesc Product
 infix 5 *:
 
--- printCol :: ColName -> Frame -> IO ()
--- printCol = 
-
+printCol :: ColName -> Frame -> IO ()
+printCol colName Frame {colMapRef} = do 
+    colMap <- readMVar colMapRef
+    case (Data.Map.lookup colName colMap) of
+        Nothing -> throwIO $ ColMissing colName
+        Just (SomeCol _ (Col vs)) -> 
+            Data.Foldable.for_ vs print
 
 (.=) :: ColName -> OpDesc -> Frame -> IO ()
 (.=) destColName (OpDesc op colNameL colNameR)  Frame {opDict, convDict, colMapRef} = do 
     modifyMVar_ colMapRef $ \colMap -> do
-        let tryOp :: forall xt . TypeRep xt -> Col xt -> Col xt -> IO (Map ColName SomeCol)
+        let tryOp :: forall xt . Show xt =>  TypeRep xt -> Col xt -> Col xt -> IO (Map ColName SomeCol)
             tryOp tr colL colR =
                             case opDict & performOp tr colL colR op of
                                 Nothing -> do
@@ -99,8 +130,8 @@ infix 5 *:
                                 Just newCol -> do
                                     pure $ Data.Map.insert destColName (SomeCol tr newCol) colMap
         case (Data.Map.lookup colNameL colMap, Data.Map.lookup colNameR colMap) of
-            (Nothing, _) -> throwIO $ LeftColMissing colNameL
-            (_, Nothing) -> throwIO $ RightColMissing colNameR
+            (Nothing, _) -> throwIO $ ColMissing colNameL
+            (_, Nothing) -> throwIO $ ColMissing colNameR
             (Just (SomeCol trL colL), Just (SomeCol trR colR)) ->
                 if 
                     | Just Type.Reflection.HRefl <- trL `eqTypeRep` trR -> do
@@ -115,14 +146,11 @@ infix 5 *:
                                 throwIO $ NoConvDefinition (SomeTypeRep trL) (SomeTypeRep trR)
 infix 4 .=
 
--- frame & "foo" := "asd" _*_ "fff"
-
 someFunc :: IO ()
 someFunc = putStrLn "someFunc"
 
 data FrameOops = 
-          LeftColMissing ColName
-        | RightColMissing ColName
+          ColMissing ColName
         | NoOpDefinition Op SomeTypeRep
         | NoConvDefinition SomeTypeRep SomeTypeRep
     deriving stock Show
