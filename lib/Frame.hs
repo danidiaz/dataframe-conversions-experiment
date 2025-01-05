@@ -9,7 +9,7 @@ import Type.Reflection qualified
 import Data.Map (Map)
 import Data.Map qualified
 import Data.Text (Text)
-import Data.IORef (IORef, readIORef, writeIORef)
+import Control.Concurrent.MVar (MVar, modifyMVar_)
 import Control.Exception (Exception, throwIO)
 import Data.Function ((&))
 
@@ -17,7 +17,7 @@ data Frame = Frame {
         opDict :: OpDict,
         convDict :: ConvDict,
         -- Does this need to be a mutable reference?
-        colMapRef :: IORef (Map ColName SomeCol)
+        colMapRef :: MVar (Map ColName SomeCol)
     }
 
 newtype ColName = ColName Text  
@@ -84,34 +84,34 @@ infix 5 *:
 
 (.=) :: ColName -> OpDesc -> Frame -> IO ()
 (.=) destColName (OpDesc op colNameL colNameR)  Frame {opDict, convDict, colMapRef} = do 
-    colMap <- readIORef colMapRef
-    case (Data.Map.lookup colNameL colMap, Data.Map.lookup colNameR colMap) of
-        (Nothing, _) -> throwIO $ LeftColMissing colNameL
-        (_, Nothing) -> throwIO $ RightColMissing colNameR
-        (Just (SomeCol trL colL), Just (SomeCol trR colR)) ->
-            if 
-                | Just Type.Reflection.HRefl <- trL `eqTypeRep` trR -> do
-                    case opDict & performOp trL colL colR op of
-                        Nothing -> do
-                            throwIO $ NoOpDefinition op (SomeTypeRep trL) 
-                        Just newCol -> do
-                            writeIORef colMapRef $ Data.Map.insert destColName (SomeCol trL newCol) colMap
-                | otherwise -> 
-                    case convDict & performConv trL colL trR colR of
-                        Nothing -> do
-                            throwIO $ NoConvDefinition (SomeTypeRep trL) (SomeTypeRep trR)
-                        Just (Left (colL1, colL2)) -> do
-                            case opDict & performOp trL colL1 colL2 op of
-                                Nothing -> do
-                                    throwIO $ NoOpDefinition op (SomeTypeRep trL) 
-                                Just newCol -> do
-                                    writeIORef colMapRef $ Data.Map.insert destColName (SomeCol trL newCol) colMap
-                        Just (Right (colR1, colR2)) -> do
-                            case opDict & performOp trR colR1 colR2 op of
-                                Nothing -> do
-                                    throwIO $ NoOpDefinition op (SomeTypeRep trR) 
-                                Just newCol -> do
-                                    writeIORef colMapRef $ Data.Map.insert destColName (SomeCol trR newCol) colMap
+    modifyMVar_ colMapRef $ \colMap -> do
+        case (Data.Map.lookup colNameL colMap, Data.Map.lookup colNameR colMap) of
+            (Nothing, _) -> throwIO $ LeftColMissing colNameL
+            (_, Nothing) -> throwIO $ RightColMissing colNameR
+            (Just (SomeCol trL colL), Just (SomeCol trR colR)) ->
+                if 
+                    | Just Type.Reflection.HRefl <- trL `eqTypeRep` trR -> do
+                        case opDict & performOp trL colL colR op of
+                            Nothing -> do
+                                throwIO $ NoOpDefinition op (SomeTypeRep trL) 
+                            Just newCol -> do
+                                pure $ Data.Map.insert destColName (SomeCol trL newCol) colMap
+                    | otherwise -> 
+                        case convDict & performConv trL colL trR colR of
+                            Nothing -> do
+                                throwIO $ NoConvDefinition (SomeTypeRep trL) (SomeTypeRep trR)
+                            Just (Left (colL1, colL2)) -> do
+                                case opDict & performOp trL colL1 colL2 op of
+                                    Nothing -> do
+                                        throwIO $ NoOpDefinition op (SomeTypeRep trL) 
+                                    Just newCol -> do
+                                        pure $ Data.Map.insert destColName (SomeCol trL newCol) colMap
+                            Just (Right (colR1, colR2)) -> do
+                                case opDict & performOp trR colR1 colR2 op of
+                                    Nothing -> do
+                                        throwIO $ NoOpDefinition op (SomeTypeRep trR) 
+                                    Just newCol -> do
+                                        pure $ Data.Map.insert destColName (SomeCol trR newCol) colMap
 infix 4 .=
 
 -- frame & "foo" := "asd" _*_ "fff"
