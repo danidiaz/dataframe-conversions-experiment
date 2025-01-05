@@ -1,8 +1,7 @@
 module Main where
 
-import qualified Frame (someFunc)
+import Frame
 
 main :: IO ()
 main = do
   putStrLn "Hello, Haskell!"
-  Frame.someFunc
